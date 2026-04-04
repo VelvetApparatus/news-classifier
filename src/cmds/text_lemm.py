@@ -12,25 +12,11 @@ def lemm_csv(
         target_col: str,
         lemm_col: str
 ):
-
     df = pd.read_csv(csv_read_path)
 
-    if "content" not in df.columns:
-        title = df["title"].fillna("") if "title" in df.columns else ""
-        text = df["text"].fillna("") if "text" in df.columns else ""
-        if isinstance(title, str):
-            df["content"] = text
-        else:
-            df["content"] = (title + " " + text).str.strip()
-
-    df = df.dropna(subset=["content"]).copy()
-    df["content"] = df["content"].astype(str)
-    df = df[df["content"].str.len() > 20].copy()
-
-    df[target_col] = preprocess_texts(df["content"])
-    df = df[df[target_col].str.len() > 0].copy()
-    df.drop(columns=["content", ], inplace=True)
-
+    df[target_col] = preprocess_texts(df[target_col])
+    df.fillna("", inplace=True)
+    # df = df[df[target_col].str.len() > 0].copy()
 
     if target_col not in df.columns:
         raise ValueError(f"Column '{target_col}' not found in the CSV file.")
@@ -39,12 +25,10 @@ def lemm_csv(
     df.to_csv(csv_write_path, index=False)
 
 
-
 if __name__ == "__main__":
     lemm_csv(
-        csv_read_path="data/corpus/ru-news.csv",
-        csv_write_path="data/corpus/ru-news-lemmatized.csv",
+        csv_read_path="data/corpus/joined.csv",
+        csv_write_path="data/corpus/joined-lemmatizedv2.csv",
         target_col="text",
         lemm_col="lemmatized"
     )
-
