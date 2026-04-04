@@ -1,0 +1,86 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: news-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: news
+      POSTGRES_USER: news
+      POSTGRES_PASSWORD: news
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U news -d news"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: bitnami/kafka:3.6.1-debian-11-r4
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    environment:
+      - KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS=1000000
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "/opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+#  migrations:
+#    build: .
+#    command: python -m src.db.migrations_runner
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#    environment:
+#      POSTGRES_DSN: postgresql://news:news@postgres:5432/news
+#      LOG_LEVEL: INFO
+
+  app:
+    build: .
+    command: python -m src.main all
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+#      migrations:
+#        condition: service_completed_successfully
+    environment:
+      POSTGRES_DSN: postgresql://news:news@postgres:5432/news
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: news-topic
+      KAFKA_GROUP_ID: news-consumer
+      MODEL_ARTIFACTS_PATH: /app/meta
+      UNKNOWN_THRESHOLD: 0.5
+      METADATA_RELOAD_INTERVAL_SECONDS: 300
+      BATCH_SIZE: 32
+      BATCH_INTERVAL_SECONDS: 30
+      NEWSDATA_API_KEY: ${NEWSDATA_API_KEY:-}
+      POLL_INTERVAL_SEC: 60
+      LOG_LEVEL: INFO
+    volumes:
+      - ./meta:/app/meta:ro
+
+volumes:
+  postgres_data:

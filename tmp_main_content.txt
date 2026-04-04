@@ -1,0 +1,78 @@
+++ tmp_main_content.txt
+from __future__ import annotations
+
+import logging
+import threading
+import time
+
+import click
+
+
+logger = logging.getLogger(__name__)
+
+
+@click.group()
+def cli() -> None:
+    """Entry point for backend services."""
+
+
+@cli.command()
+def consumer() -> None:
+    """Run Kafka consumer worker."""
+    from src.workers.kafka_consumer import run_consumer
+    run_consumer()
+
+
+@cli.command()
+def inference_worker() -> None:
+    """Run batch inference worker."""
+    from src.workers.batch_inference import run_worker
+    run_worker()
+
+
+@cli.command()
+def newsdata_producer() -> None:
+    """Run NewsData ingestion producer."""
+    from src.ingestion.newsdata_producer import main as run_newsdata
+    run_newsdata()
+
+
+def _start_service(name: str, target) -> threading.Thread:
+    def runner() -> None:
+        try:
+            target()
+        except Exception:
+            logger.exception("Service crashed", extra={"service": name})
+
+    thread = threading.Thread(target=runner, name=f"{name}-thread", daemon=True)
+    thread.start()
+    return thread
+
+
+@cli.command("all")
+def run_all() -> None:
+    """Run consumer, inference worker, and NewsData producer in one process."""
+    from src.workers.kafka_consumer import run_consumer
+    from src.workers.batch_inference import run_worker
+    from src.ingestion.newsdata_producer import main as run_newsdata
+
+    services = [
+        ("consumer", run_consumer),
+        ("inference_worker", run_worker),
+        ("newsdata_producer", run_newsdata),
+    ]
+
+    for name, target in services:
+        _start_service(name, target)
+
+    click.echo("Started services: consumer, inference_worker, newsdata_producer")
+
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        logger.info("Combined runner interrupted, shutting down")
+
+
+if __name__ == "__main__":
+    cli()

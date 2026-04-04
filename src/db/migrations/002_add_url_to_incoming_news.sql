@@ -1,0 +1,2 @@
+ALTER TABLE incoming_news
+    ADD COLUMN IF NOT EXISTS url TEXT NULL;
