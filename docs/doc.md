@@ -245,7 +245,7 @@
 
 
 ## Cбор данных
-Для обучения датасета будет использован два датасета:  [датасет русских новостей](https://www.kaggle.com/datasets/vfomenko/russian-news-2020) и   с kaggle.com 
+Для обучения датасета будет использован два датасета:  [датасет русских новостей 20 года](https://www.kaggle.com/datasets/vfomenko/russian-news-2020) и  [датасет русских новостей с 15 по 20 год](https://huggingface.co/datasets/IlyaGusev/ru_news) с kaggle.com 
 Для запуска системы, данные будут парситься в real-time с различных площадок: Lenta.ru, Izvestia и тд. 
 
 ## Архитектура проекта 
