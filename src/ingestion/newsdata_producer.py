@@ -10,7 +10,11 @@ import requests
 from kafka import KafkaProducer
 
 from src.config import get_settings
+from src.monitoring import setup_monitoring
+from src.monitoring.metrics import MetricsCollector
 from src.utils.logging import setup_logging
+
+from src.monitoring.health import HealthRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +22,21 @@ NEWSDATA_ENDPOINT = "https://newsdata.io/api/1/latest"
 
 
 class NewsDataProducer:
-    def __init__(self, api_key: str, bootstrap_servers: list[str], topic: str):
+    def __init__(
+        self,
+        api_key: str,
+        bootstrap_servers: list[str],
+        topic: str,
+        metrics: MetricsCollector | None = None,
+        health: HealthRegistry | None = None,
+    ):
         if not api_key:
             raise ValueError("NewsData API key must be provided")
 
         self.api_key = api_key
         self.topic = topic
+        self.metrics = metrics
+        self.health = health
         self.producer = KafkaProducer(
             bootstrap_servers=bootstrap_servers,
             value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode("utf-8"),
@@ -31,6 +44,7 @@ class NewsDataProducer:
         )
 
     def fetch(self) -> list[dict[str, Any]]:
+        started = time.perf_counter()
         try:
             response = requests.get(
                 NEWSDATA_ENDPOINT,
@@ -44,16 +58,33 @@ class NewsDataProducer:
             response.raise_for_status()
         except requests.RequestException as exc:
             logger.error("NewsData API request failed", exc_info=exc)
+            if self.metrics:
+                self.metrics.inc_news_fetch_errors()
+            if self.health:
+                self.health.report_error("newsdata_api", str(exc))
             return []
 
         try:
             payload = response.json()
         except ValueError:
             logger.error("Failed to decode NewsData response as JSON")
+            if self.metrics:
+                self.metrics.inc_news_fetch_errors()
+            if self.health:
+                self.health.report_error("newsdata_api", "invalid JSON response")
             return []
 
         results = payload.get("results") or []
-        logger.info("Fetched NewsData batch", extra={"count": len(results)})
+        duration = time.perf_counter() - started
+        if self.metrics:
+            self.metrics.observe_news_fetch(duration, len(results))
+
+        if self.health:
+            self.health.report_ok("newsdata_api", f"{len(results)} articles fetched")
+
+        logger.info(
+            "Fetched NewsData batch", extra={"count": len(results), "duration": duration}
+        )
         return results
 
     @staticmethod
@@ -87,6 +118,10 @@ class NewsDataProducer:
         for message in messages:
             self.producer.send(self.topic, value=message)
         self.producer.flush()
+        if self.metrics:
+            self.metrics.inc_news_published(len(messages))
+        if self.health:
+            self.health.report_ok("kafka_producer", f"{len(messages)} messages sent")
         logger.info("Published messages to Kafka", extra={"count": len(messages)})
 
     def run_once(self) -> None:
@@ -110,10 +145,18 @@ class NewsDataProducer:
 def main() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
+    metrics, health, monitoring_server = setup_monitoring(
+        service_name=settings.service_name or "newsdata_producer",
+        host=settings.monitoring_host,
+        port=settings.monitoring_port,
+        enabled=settings.monitoring_enabled,
+    )
     producer = NewsDataProducer(
         api_key=settings.newsdata_api_key,
         bootstrap_servers=settings.kafka_bootstrap_servers_list,
         topic=settings.kafka_topic,
+        metrics=metrics,
+        health=health,
     )
 
     poll_interval = settings.newsdata_poll_interval_seconds
@@ -121,6 +164,9 @@ def main() -> None:
         "Starting NewsData producer",
         extra={"poll_interval_seconds": poll_interval, "topic": settings.kafka_topic},
     )
+
+    if health:
+        health.report_ok("service", "starting")
 
     try:
         while True:
@@ -130,6 +176,8 @@ def main() -> None:
         logger.info("NewsData producer interrupted, shutting down")
     finally:
         producer.producer.close()
+        if monitoring_server:
+            monitoring_server.stop()
 
 
 if __name__ == "__main__":

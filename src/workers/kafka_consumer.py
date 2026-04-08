@@ -10,6 +10,7 @@ from kafka.structs import OffsetAndMetadata
 from src.config import get_settings
 from src.db import get_connection_pool
 from src.db.repositories import insert_incoming_news
+from src.monitoring import setup_monitoring
 from src.utils.logging import setup_logging
 from src.workers.utils import build_external_id, parse_published_at
 
@@ -54,6 +55,12 @@ def process_payload(payload: dict) -> dict:
 def run_consumer() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
+    metrics, health, monitoring_server = setup_monitoring(
+        service_name=settings.service_name or "kafka_consumer",
+        host=settings.monitoring_host,
+        port=settings.monitoring_port,
+        enabled=settings.monitoring_enabled,
+    )
     pool = get_connection_pool()
     consumer = KafkaConsumer(
         settings.kafka_topic,
@@ -72,6 +79,8 @@ def run_consumer() -> None:
             "group": settings.kafka_group_id,
         },
     )
+    if health:
+        health.report_ok("consumer", "started")
 
     try:
         while True:
@@ -88,6 +97,13 @@ def run_consumer() -> None:
                             "Failed to decode message as JSON",
                             extra={"partition": tp.partition, "offset": message.offset},
                         )
+                        if metrics:
+                            metrics.inc_consumer_errors()
+                        if health:
+                            health.report_error(
+                                "payload",
+                                f"invalid JSON partition={tp.partition} offset={message.offset}",
+                            )
                         # consumer.commit(
                         #     {tp: OffsetAndMetadata(
                         #
@@ -107,6 +123,10 @@ def run_consumer() -> None:
                                 "error": str(exc),
                             },
                         )
+                        if metrics:
+                            metrics.inc_consumer_errors()
+                        if health:
+                            health.report_error("payload", str(exc))
                         # consumer.commit(
                         #     {tp: OffsetAndMetadata(message.offset + 1, None)}
                         # )
@@ -135,6 +155,13 @@ def run_consumer() -> None:
                                 "external_id": prepared["external_id"],
                             },
                         )
+                        if metrics:
+                            metrics.inc_consumer_errors()
+                        if health:
+                            health.report_error(
+                                "database",
+                                f"insert failed external_id={prepared['external_id']}",
+                            )
                         continue
 
                     # consumer.commit(
@@ -151,6 +178,13 @@ def run_consumer() -> None:
                                 "external_id": prepared["external_id"],
                             },
                         )
+                        if metrics:
+                            metrics.inc_consumer_stored()
+                        if health:
+                            health.report_ok(
+                                "database",
+                                f"stored news_id={prepared['news_id']}",
+                            )
                     else:
                         logger.info(
                             "Duplicate news skipped by external_id",
@@ -160,10 +194,19 @@ def run_consumer() -> None:
                                 "external_id": prepared["external_id"],
                             },
                         )
+                        if metrics:
+                            metrics.inc_consumer_duplicates()
+                        if health:
+                            health.report_ok(
+                                "database",
+                                f"duplicate external_id={prepared['external_id']}",
+                            )
     except KeyboardInterrupt:
         logger.info("Kafka consumer interrupted, shutting down")
     finally:
         consumer.close()
+        if monitoring_server:
+            monitoring_server.stop()
 
 
 if __name__ == "__main__":

@@ -41,15 +41,15 @@ def predict_batch(
         cluster_id = int(cluster_id)
         score = float(score)
 
-        if unknown_threshold is not None and score > unknown_threshold:
-            results.append({
-                "text": text,
-                "cluster_id": None,
-                "topic_label": "unknown",
-                "top_words": [],
-                "score": score,
-            })
-            continue
+        # if unknown_threshold is not None and score < unknown_threshold:
+        #     results.append({
+        #         "text": text,
+        #         "cluster_id": None,
+        #         "topic_label": "unknown",
+        #         "top_words": [],
+        #         "score": score,
+        #     })
+        #     continue
 
         meta = topic_metadata.get(cluster_id, {
             "label": f"cluster_{cluster_id}",

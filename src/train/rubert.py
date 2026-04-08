@@ -246,7 +246,7 @@ def run_bert_topic_pipeline(
 
 def run():
     data_path = "data/corpus/ru-news-lemmatized.csv"
-    artifacts_dir = "artifacts/rubert-cls-kmeans-v12"
+    artifacts_dir = "artifacts/rubert-cls-kmeans-v13"
 
     df = pd.read_csv(data_path)
 
