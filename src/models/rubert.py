@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
+import hdbscan
+import joblib
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.decomposition import PCA
-from tqdm.auto import tqdm
-
-from transformers import AutoTokenizer, AutoModel
+from huggingface_hub import snapshot_download
 from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 from sklearn.preprocessing import normalize
-import hdbscan
-import joblib
+from tqdm.auto import tqdm
+from transformers import AutoModel, AutoTokenizer
+
+logger = logging.getLogger(__name__)
 
 
 def save_clusterer(clusterer: TextClusterer, path: str) -> None:
@@ -46,13 +50,25 @@ class TextClusterer:
                 prediction_data=True
             )
 
+    def _fit_reduce(self, X: np.ndarray) -> np.ndarray:
+        reducer = getattr(self, "reducer", None)
+        if reducer is None:
+            return X
+        return reducer.fit_transform(X)
+
+    def _transform(self, X: np.ndarray) -> np.ndarray:
+        reducer = getattr(self, "reducer", None)
+        if reducer is None:
+            return X
+        return reducer.transform(X)
+
     def fit_predict(self, X: np.ndarray) -> np.ndarray:
-        embeddings_reduced = self.reducer.fit_transform(X)
+        embeddings_reduced = self._fit_reduce(X)
         labels = self.model.fit_predict(embeddings_reduced)
         return labels
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        X_reduced = self.reducer.transform(X)
+        X_reduced = self._transform(X)
 
         if self.config.method == "kmeans":
             return self.model.predict(X_reduced)
@@ -63,17 +79,19 @@ class TextClusterer:
 
         raise ValueError(f"Unknown clustering method: {self.config.method}")
 
-    def predict_with_scores(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        X_reduced = self.reducer.transform(X)
+    def  predict_with_scores(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        X_reduced = self._transform(X)
 
         if self.config.method == "kmeans":
             labels = self.model.predict(X_reduced)
             distances = self.model.transform(X_reduced)
             min_distances = distances.min(axis=1)
-            return labels, min_distances
+            confidences = np.exp(-min_distances)
+            return labels, confidences
 
         elif self.config.method == "hdbscan":
             labels, strengths = hdbscan.approximate_predict(self.model, X_reduced)
+            strengths = np.clip(strengths, 0.0, 1.0)
             return labels, strengths
 
         raise ValueError(f"Unknown clustering method: {self.config.method}")
@@ -113,12 +131,118 @@ class BertClusteringConfig:
 
 
 class RuBERTEmbedder:
-    def __init__(self, config: BertClusteringConfig):
+    def __init__(
+        self,
+        config: BertClusteringConfig,
+        *,
+        cache_dir: Path | None = None,
+        local_dir: Path | None = None,
+        allow_download: bool = True,
+        download_retries: int = 3,
+    ):
         self.config = config
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
-        self.model = AutoModel.from_pretrained(config.model_name)
+        self._cache_dir = Path(cache_dir) if cache_dir else None
+        self._local_dir = Path(local_dir) if local_dir else None
+        self._allow_download = allow_download
+        self._download_retries = max(1, download_retries)
+        self._local_ready = False
+
+        if self._local_dir:
+            self._prepare_local_weights()
+
+        self.tokenizer = self._load_component("tokenizer", AutoTokenizer)
+        self.model = self._load_component("model", AutoModel)
         self.model.to(config.device)
         self.model.eval()
+
+    def _prepare_local_weights(self) -> None:
+        if not self._local_dir:
+            return
+        if self._is_local_ready():
+            self._local_ready = True
+            logger.info("Using existing local RuBERT weights at %s", self._local_dir)
+            return
+        if not self._allow_download:
+            logger.warning(
+                "Local RuBERT directory %s is empty and downloads disabled",
+                self._local_dir,
+            )
+            return
+
+        for attempt in range(1, self._download_retries + 1):
+            try:
+                logger.info(
+                    "Downloading RuBERT snapshot to %s (attempt %s/%s)",
+                    self._local_dir,
+                    attempt,
+                    self._download_retries,
+                )
+                snapshot_download(
+                    repo_id=self.config.model_name,
+                    cache_dir=str(self._cache_dir) if self._cache_dir else None,
+                    local_dir=str(self._local_dir),
+                    local_dir_use_symlinks=False,
+                    resume_download=True,
+                )
+                self._local_ready = True
+                logger.info("RuBERT snapshot downloaded to %s", self._local_dir)
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to download RuBERT snapshot: %s (attempt %s/%s)",
+                    exc,
+                    attempt,
+                    self._download_retries,
+                )
+                time.sleep(min(2**attempt, 10))
+
+        logger.warning(
+            "Unable to download RuBERT snapshot; falling back to cache/network"
+        )
+
+    def _is_local_ready(self) -> bool:
+        if not self._local_dir:
+            return False
+        return (self._local_dir / "config.json").exists()
+
+    def _iter_sources(self) -> list[tuple[str, bool, str]]:
+        sources: list[tuple[str, bool, str]] = []
+        if self._local_dir and self._is_local_ready():
+            sources.append((str(self._local_dir), True, "local_dir"))
+        sources.append((self.config.model_name, True, "cache"))
+        if self._allow_download:
+            sources.append((self.config.model_name, False, "remote"))
+        return sources
+
+    def _load_component(self, component: str, loader) -> Any:
+        last_exc: Exception | None = None
+        for source, local_only, origin in self._iter_sources():
+            retries = 1 if local_only else self._download_retries
+            for attempt in range(1, retries + 1):
+                try:
+                    kwargs = {"local_files_only": local_only}
+                    if self._cache_dir and source == self.config.model_name:
+                        kwargs["cache_dir"] = str(self._cache_dir)
+                    return loader.from_pretrained(source, **kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    logger.warning(
+                        "Failed to load %s from %s (attempt %s/%s): %s",
+                        component,
+                        origin,
+                        attempt,
+                        retries,
+                        exc,
+                    )
+                    if local_only:
+                        break
+                    time.sleep(min(2**attempt, 10))
+            # loop next source
+        if last_exc:
+            raise RuntimeError(
+                f"Unable to load {component} for RuBERT from available sources"
+            ) from last_exc
+        raise RuntimeError(f"No sources available to load {component}")
 
     def encode_and_save(self, texts: list[str], save_path: str | Path) -> np.ndarray:
         save_path = Path(save_path)

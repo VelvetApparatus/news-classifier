@@ -18,8 +18,24 @@ logger = logging.getLogger(__name__)
 
 
 class ModelService:
-    def __init__(self, artifacts_path: str | Path):
+    def __init__(
+        self,
+        artifacts_path: str | Path,
+        *,
+        huggingface_cache_dir: Path | None = None,
+        huggingface_local_dir: Path | None = None,
+        huggingface_allow_download: bool = True,
+        huggingface_download_retries: int = 3,
+    ):
         self._artifacts_path = Path(artifacts_path)
+        self._huggingface_cache_dir = (
+            Path(huggingface_cache_dir) if huggingface_cache_dir else None
+        )
+        self._huggingface_local_dir = (
+            Path(huggingface_local_dir) if huggingface_local_dir else None
+        )
+        self._huggingface_allow_download = huggingface_allow_download
+        self._huggingface_download_retries = max(1, huggingface_download_retries)
         self._embedder: RuBERTEmbedder | None = None
         self._clusterer: TextClusterer | None = None
         self._load()
@@ -42,7 +58,13 @@ class ModelService:
             bert_config.device = "cpu"
         elif bert_config.device == "mps" and not torch.backends.mps.is_available():
             bert_config.device = "cpu"
-        self._embedder = RuBERTEmbedder(bert_config)
+        self._embedder = RuBERTEmbedder(
+            bert_config,
+            cache_dir=self._huggingface_cache_dir,
+            local_dir=self._huggingface_local_dir,
+            allow_download=self._huggingface_allow_download,
+            download_retries=self._huggingface_download_retries,
+        )
         self._clusterer = load_clusterer(str(clusterer_path))
         logger.info(
             "Model service initialized",

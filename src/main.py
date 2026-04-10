@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
+from pathlib import Path
 
 import click
 
+from src.config import Settings, get_settings
+from src.db import get_connection_pool
+from src.db.repositories import upsert_topic_metadata
+from src.monitoring import run_health_checks
+from src.services.topic_metadata_loader import load_topic_metadata_from_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +46,46 @@ def newsdata_producer() -> None:
     run_newsdata()
 
 
-def _start_service(name: str, target) -> None:
+@cli.command("sync-topics")
+@click.option(
+    "--artifacts-path",
+    type=click.Path(path_type=Path),
+    help="Override path to artifacts (defaults to Settings.artifacts_path)",
+)
+def sync_topics(artifacts_path: Path | None) -> None:
+    """Seed topic_metadata table using topics.json from artifacts."""
+    settings = get_settings()
+    path = artifacts_path or settings.artifacts_path
+    records = list(load_topic_metadata_from_artifacts(path))
+    if not records:
+        raise click.ClickException(
+            f"No topic metadata found in artifacts directory: {path}"
+        )
+
+    pool = get_connection_pool()
+    with pool.connection() as conn:
+        upsert_topic_metadata(conn, records)
+        conn.commit()
+    click.echo(f"Inserted/updated {len(records)} topic metadata records")
+
+
+@cli.command("health")
+def health_command() -> None:
+    """Run synchronous health checks and print the result."""
+    checks = run_health_checks(get_settings())
+    click.echo(json.dumps(checks, ensure_ascii=False, indent=2))
+    if any(item["status"] != "ok" for item in checks):
+        raise SystemExit(1)
+
+
+def _start_service(name: str, target, settings: Settings | None = None) -> None:
     def runner() -> None:
         try:
-            target()
-        except Exception:
+            if settings is not None:
+                target(settings=settings)
+            else:
+                target()
+        except Exception:  # noqa: BLE001
             logger.exception("Service crashed", extra={"service": name})
 
     thread = threading.Thread(target=runner, name=f"{name}-thread", daemon=True)
@@ -57,14 +99,21 @@ def all_services() -> None:
     from src.workers.batch_inference import run_worker
     from src.ingestion.newsdata_producer import main as run_newsdata
 
+    base_settings = get_settings()
+    base_port = base_settings.monitoring_port or 9100
+
     services = [
-        ("consumer", run_consumer),
-        ("inference_worker", run_worker),
-        ("newsdata_producer", run_newsdata),
+        ("newsdata_producer", run_newsdata, "newsdata_producer", 0),
+        ("consumer", run_consumer, "kafka_consumer", 1),
+        ("inference_worker", run_worker, "batch_inference", 2),
     ]
 
-    for name, target in services:
-        _start_service(name, target)
+    for name, target, service_name, idx in services:
+        overrides = {"service_name": service_name}
+        if base_settings.monitoring_enabled:
+            overrides["monitoring_port"] = base_port + idx
+        service_settings = base_settings.model_copy(update=overrides)
+        _start_service(name, target, service_settings)
 
     click.echo("Started services: consumer, inference_worker, newsdata_producer")
 
