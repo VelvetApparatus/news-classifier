@@ -7,7 +7,7 @@ from uuid import uuid4
 from kafka import KafkaConsumer
 from kafka.structs import OffsetAndMetadata
 
-from src.config import get_settings
+from src.config import Settings, get_settings
 from src.db import get_connection_pool
 from src.db.repositories import insert_incoming_news
 from src.monitoring import setup_monitoring
@@ -52,8 +52,8 @@ def process_payload(payload: dict) -> dict:
     }
 
 
-def run_consumer() -> None:
-    settings = get_settings()
+def run_consumer(settings: Settings | None = None) -> None:
+    settings = settings or get_settings()
     setup_logging(settings.log_level)
     metrics, health, monitoring_server = setup_monitoring(
         service_name=settings.service_name or "kafka_consumer",

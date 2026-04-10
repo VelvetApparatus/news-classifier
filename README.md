@@ -381,6 +381,7 @@
   - **NewsData producer** — фиксирует длительность запросов к API, количество полученных/отправленных статей и ошибки.
   - **Kafka consumer** — считает сохранённые записи, дубликаты, ошибки декодирования/БД.
   - **Batch inference worker** — измеряет время обработки батча, время инференса модели и долю `unknown` документов.
+- При запуске `python -m src.main all` каждый поток получает своё имя (`newsdata_producer`, `kafka_consumer`, `batch_inference`) и порт (если `MONITORING_ENABLED=true`, используется `MONITORING_PORT` или диапазон 9100+N), поэтому `/metrics` и `/healthz` остаются доступными и в этом режиме.
 - Чувствительность к неопределённым результатам управляется переменной `UNKNOWN_THRESHOLD` (по умолчанию не задана). Теперь score = confidence в диапазоне [0, 1]: значение < порога означает низкую уверенность и документ помечается как `unknown`. Рекомендуемые значения — 0.3–0.5 в зависимости от качества модели.
 
 Пример запуска batch-инференса с включёнными проверками:
@@ -407,7 +408,7 @@ python -m src.main inference_worker
 | Переменная | Назначение |
 |-----------|------------|
 | `POLL_INTERVAL_SEC` | Периодичность опроса NewsData API продюсером (секунды). |
-| `NEWS_DATA_API_KEY` | Ключ для API источника новостей. |
+| `NEWSDATA_API_KEY` | Ключ для API источника новостей. |
 | `KAFKA_BOOTSTRAP_SERVERS` | Bootstrap-узлы Kafka (`host:port`, через запятую), которые используют и продюсер, и консюмер. |
 | `KAFKA_TOPIC` | Топик Kafka, куда отправляются новости и который читает консюмер/воркер. |
 | `KAFKA_GROUP_ID` | Идентификатор consumer group (для балансировки нескольких воркеров). |
@@ -424,3 +425,9 @@ python -m src.main inference_worker
 | `HUGGINGFACE_CACHE_DIR`, `HUGGINGFACE_LOCAL_DIR` | Локальные пути к кэшу и копии модели RuBERT. |
 | `HUGGINGFACE_ALLOW_DOWNLOAD`, `HUGGINGFACE_DOWNLOAD_RETRIES` | Управление разрешением на скачивание и количеством попыток при сетевых сбоях. |
 | `POSTGRES_DSN` | Подключение к PostgreSQL (`postgresql://user:pass@host:port/db`). |
+| `DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE` | Минимальное/максимальное число соединений в пуле PostgreSQL. |
+
+### Grafana dashboard
+
+- Готовый JSON-дэшборд лежит в `docs/monitoring/news_dashboard.json`. Импортируй его в Grafana (Dashboards → Import → Upload JSON) и выбери источник данных Prometheus.
+- Панели покрывают продюсер, консюмер и batch-инференс: скорость загрузки новостей, p95 задержки, долю `unknown`, ошибки и throughput. Перед импортом убедись, что все сервисы запускаются с `MONITORING_ENABLED=true`, каждый на своём `MONITORING_PORT`, чтобы Prometheus собирал `news_*`, `incoming_news_*`, `batch_*` метрики.

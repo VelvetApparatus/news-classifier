@@ -9,7 +9,7 @@ from typing import Any
 import requests
 from kafka import KafkaProducer
 
-from src.config import get_settings
+from src.config import Settings, get_settings
 from src.monitoring import setup_monitoring
 from src.monitoring.metrics import MetricsCollector
 from src.utils.logging import setup_logging
@@ -142,8 +142,8 @@ class NewsDataProducer:
         self.send(normalized)
 
 
-def main() -> None:
-    settings = get_settings()
+def main(settings: Settings | None = None) -> None:
+    settings = settings or get_settings()
     setup_logging(settings.log_level)
     metrics, health, monitoring_server = setup_monitoring(
         service_name=settings.service_name or "newsdata_producer",

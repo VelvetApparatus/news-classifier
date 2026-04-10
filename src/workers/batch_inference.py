@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from psycopg_pool import ConnectionPool
 
-from src.config import get_settings
+from src.config import Settings, get_settings
 from src.db import get_connection_pool
 from src.db.repositories import (
     get_unprocessed_news_batch,
@@ -139,8 +139,8 @@ def process_batch(
         )
 
 
-def run_worker() -> None:
-    settings = get_settings()
+def run_worker(settings: Settings | None = None) -> None:
+    settings = settings or get_settings()
     setup_logging(settings.log_level)
     metrics, health, monitoring_server = setup_monitoring(
         service_name=settings.service_name or "batch_inference",

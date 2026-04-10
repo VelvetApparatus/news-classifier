@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 import time
 from pathlib import Path
 
 import click
 
-from src.config import get_settings
+from src.config import Settings, get_settings
 from src.db import get_connection_pool
 from src.db.repositories import upsert_topic_metadata
 from src.monitoring import run_health_checks
@@ -79,10 +78,13 @@ def health_command() -> None:
         raise SystemExit(1)
 
 
-def _start_service(name: str, target) -> None:
+def _start_service(name: str, target, settings: Settings | None = None) -> None:
     def runner() -> None:
         try:
-            target()
+            if settings is not None:
+                target(settings=settings)
+            else:
+                target()
         except Exception:  # noqa: BLE001
             logger.exception("Service crashed", extra={"service": name})
 
@@ -97,14 +99,21 @@ def all_services() -> None:
     from src.workers.batch_inference import run_worker
     from src.ingestion.newsdata_producer import main as run_newsdata
 
+    base_settings = get_settings()
+    base_port = base_settings.monitoring_port or 9100
+
     services = [
-        ("consumer", run_consumer),
-        ("inference_worker", run_worker),
-        ("newsdata_producer", run_newsdata),
+        ("newsdata_producer", run_newsdata, "newsdata_producer", 0),
+        ("consumer", run_consumer, "kafka_consumer", 1),
+        ("inference_worker", run_worker, "batch_inference", 2),
     ]
 
-    for name, target in services:
-        _start_service(name, target)
+    for name, target, service_name, idx in services:
+        overrides = {"service_name": service_name}
+        if base_settings.monitoring_enabled:
+            overrides["monitoring_port"] = base_port + idx
+        service_settings = base_settings.model_copy(update=overrides)
+        _start_service(name, target, service_settings)
 
     click.echo("Started services: consumer, inference_worker, newsdata_producer")
 
@@ -116,5 +125,4 @@ def all_services() -> None:
 
 
 if __name__ == "__main__":
-    print(os.getcwd())
     cli()
