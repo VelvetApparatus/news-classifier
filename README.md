@@ -321,14 +321,14 @@
 
 ## Проведение экспериментов
 
-| Эксперимент                | Описание                                                             | Вал. Silhouette | Вал. Coherence | Различия                                               |
-|----------------------------|----------------------------------------------------------------------|-----------------|----------------|--------------------------------------------------------|
-| `tfidf_kmeans_baseline`    | TF-IDF (20k) + KMeans, n_clusters=8                                  | 0.0046          | 0.7394         | Базовый уровень, высокое diversity                     |
-| `tfidf_kmeans_baseline_v2` | Те же признаки, другой seed                                          | 0.0047          | 0.6769         | Коэффициент coherence снизился, проверена стабильность |
-| `rubert_hdbscan`           | RuBERT CLS embeddings + HDBSCAN (min_cluster_size=5, min_samples=15) | 0.2881          | 0.5650         | Высокая компактность, но 81% noise                     |
-| `rubert_kmeans_8`          | RuBERT mean pooling + KMeans, 8 кластеров                            | 0.0482          | 0.5152         | Лучшее покрытие без шума, умеренное coherence          |
-| `rubert_kmeans_6`          | То же, 6 кластеров                                                   | 0.0463          | 0.4780         | Компромисс между скоростью и качеством                 |
-| `rubert_embeddings_pca`    | Заготовленные эмбеддинги 292k документов + PCA (50) + KMeans (6)     | 0.0357          | 0.5432         | Масштабируемое решение, пригодное для batch-инференса  |
+| Эксперимент                | Описание                                                             | Вал. Silhouette | Вал. Coherence | Различия                                               | Нефункциональные требования (latency/размер)                  |
+|----------------------------|----------------------------------------------------------------------|-----------------|----------------|--------------------------------------------------------|---------------------------------------------------------------|
+| `tfidf_kmeans_baseline`    | TF-IDF + KMeans, n_clusters=8                                        | 0.0046          | 0.7394         | Базовый уровень, высокое diversity                     | Быстрый inference (<10 мс), минимальный размер (<100 МБ)      |
+| `tfidf_kmeans_baseline_v2` | Те же признаки, другой seed                                          | 0.0047          | 0.6769         | Коэффициент coherence снизился, проверена стабильность | Аналогично baseline                                           |
+| `rubert_hdbscan`           | RuBERT CLS embeddings + HDBSCAN (min_cluster_size=5, min_samples=15) | 0.2881          | 0.5650         | Высокая компактность, но 81% noise                     | Медленный inference (~150–200 мс), высокая нагрузка CPU       |
+| `rubert_kmeans_8`          | RuBERT mean pooling + KMeans, 8 кластеров                            | 0.0482          | 0.5152         | Лучшее покрытие без шума, умеренное coherence          | Средний latency (~80–120 мс), размер модели ~1.3 ГБ           |
+| `rubert_kmeans_6`          | То же, 6 кластеров                                                   | 0.0463          | 0.4780         | Компромисс между скоростью и качеством                 | Чуть быстрее за счет меньшего числа кластеров                 |
+| `rubert_embeddings_pca`    | Заготовленные эмбеддинги + PCA (50) + KMeans (6)                     | 0.0357          | 0.5432         | Масштабируемое решение                                 | Быстрый inference (~40–50 мс), уменьшение памяти (~50 МБ PCA) |
 
 **Гиперпараметры:** перебирались количество кластеров, pooling функций (mean/cls), min_cluster_size, глубина PCA. Каждый
 эксперимент получил уникальный run-id в MLflow; скрипты для воспроизводства лежат в `src/experiments/`.
@@ -370,19 +370,28 @@
 
 ### Health-check и метрики
 
-- Для синхронизации метаданных тем используйте `python -m src.main sync-topics` (по умолчанию читает `meta/topics.json`). Команда заполнит таблицу `topic_metadata`, чтобы batch-инференс сразу получал `top_words` и метки.
-- Команда `python -m src.main health` выполняет последовательные проверки подключения к PostgreSQL, Kafka, наличия модельных артефактов и записей в `topic_metadata`. Ненулевой код возврата сигнализирует о проблеме.
+- Для синхронизации метаданных тем используйте `python -m src.main sync-topics` (по умолчанию читает
+  `meta/topics.json`). Команда заполнит таблицу `topic_metadata`, чтобы batch-инференс сразу получал `top_words` и
+  метки.
+- Команда `python -m src.main health` выполняет последовательные проверки подключения к PostgreSQL, Kafka, наличия
+  модельных артефактов и записей в `topic_metadata`. Ненулевой код возврата сигнализирует о проблеме.
 - Каждый сервис может запускать локальный HTTP эндпоинт `/healthz` и `/metrics`. Для этого задайте переменные окружения:
-  - `SERVICE_NAME` — имя сервиса (например, `newsdata_producer`, `kafka_consumer`, `batch_inference`);
-  - `MONITORING_ENABLED=true`;
-  - `MONITORING_PORT=9101` (укажите уникальный порт для каждого процесса).
-- Эндпоинт `/healthz` возвращает JSON-статус компонентов (Kafka, база, модель). `/metrics` экспонирует Prometheus-метрики: `news_fetch_duration_seconds`, `news_published_total`, `incoming_news_stored_total`, `batch_processing_duration_seconds`, `news_processed_total`, `news_marked_unknown_total` и др.
+    - `SERVICE_NAME` — имя сервиса (например, `newsdata_producer`, `kafka_consumer`, `batch_inference`);
+    - `MONITORING_ENABLED=true`;
+    - `MONITORING_PORT=9101` (укажите уникальный порт для каждого процесса).
+- Эндпоинт `/healthz` возвращает JSON-статус компонентов (Kafka, база, модель). `/metrics` экспонирует
+  Prometheus-метрики: `news_fetch_duration_seconds`, `news_published_total`, `incoming_news_stored_total`,
+  `batch_processing_duration_seconds`, `news_processed_total`, `news_marked_unknown_total` и др.
 - Интегрированные компоненты:
-  - **NewsData producer** — фиксирует длительность запросов к API, количество полученных/отправленных статей и ошибки.
-  - **Kafka consumer** — считает сохранённые записи, дубликаты, ошибки декодирования/БД.
-  - **Batch inference worker** — измеряет время обработки батча, время инференса модели и долю `unknown` документов.
-- При запуске `python -m src.main all` каждый поток получает своё имя (`newsdata_producer`, `kafka_consumer`, `batch_inference`) и порт (если `MONITORING_ENABLED=true`, используется `MONITORING_PORT` или диапазон 9100+N), поэтому `/metrics` и `/healthz` остаются доступными и в этом режиме.
-- Чувствительность к неопределённым результатам управляется переменной `UNKNOWN_THRESHOLD` (по умолчанию не задана). Теперь score = confidence в диапазоне [0, 1]: значение < порога означает низкую уверенность и документ помечается как `unknown`. Рекомендуемые значения — 0.3–0.5 в зависимости от качества модели.
+    - **NewsData producer** — фиксирует длительность запросов к API, количество полученных/отправленных статей и ошибки.
+    - **Kafka consumer** — считает сохранённые записи, дубликаты, ошибки декодирования/БД.
+    - **Batch inference worker** — измеряет время обработки батча, время инференса модели и долю `unknown` документов.
+- При запуске `python -m src.main all` каждый поток получает своё имя (`newsdata_producer`, `kafka_consumer`,
+  `batch_inference`) и порт (если `MONITORING_ENABLED=true`, используется `MONITORING_PORT` или диапазон 9100+N),
+  поэтому `/metrics` и `/healthz` остаются доступными и в этом режиме.
+- Чувствительность к неопределённым результатам управляется переменной `UNKNOWN_THRESHOLD` (по умолчанию не задана).
+  Теперь score = confidence в диапазоне [0, 1]: значение < порога означает низкую уверенность и документ помечается как
+  `unknown`. Рекомендуемые значения — 0.3–0.5 в зависимости от качества модели.
 
 Пример запуска batch-инференса с включёнными проверками:
 
@@ -395,39 +404,45 @@ python -m src.main inference_worker
 
 ### Локальная загрузка RuBERT
 
-- По умолчанию модель и токенайзер RuBERT скачиваются (при необходимости) в `meta/hf-cache`, а затем копируются в `meta/hf-model`. Если сеть недоступна, воркер сначала пытается использовать локальные файлы (`meta/hf-model` или кэш).
+- По умолчанию модель и токенайзер RuBERT скачиваются (при необходимости) в `meta/hf-cache`, а затем копируются в
+  `meta/hf-model`. Если сеть недоступна, воркер сначала пытается использовать локальные файлы (`meta/hf-model` или кэш).
 - Поведение управляется переменными окружения:
-  - `HUGGINGFACE_CACHE_DIR` — путь к кэшу (`meta/hf-cache` по умолчанию);
-  - `HUGGINGFACE_LOCAL_DIR` — директория с локальной копией модели (`meta/hf-model`);
-  - `HUGGINGFACE_ALLOW_DOWNLOAD=true|false` — разрешить скачивание с Hugging Face (по умолчанию true);
-  - `HUGGINGFACE_DOWNLOAD_RETRIES=3` — количество попыток при сбоях сети.
-- Чтобы заранее подготовить артефакты, запустите воркер с доступом к сети один раз или скачайте модель вручную в `HUGGINGFACE_LOCAL_DIR` (достаточно положить содержимое репозитория `DeepPavlov/rubert-base-cased`). После этого дальнейшие запуски будут выполняться полностью офлайн.
+    - `HUGGINGFACE_CACHE_DIR` — путь к кэшу (`meta/hf-cache` по умолчанию);
+    - `HUGGINGFACE_LOCAL_DIR` — директория с локальной копией модели (`meta/hf-model`);
+    - `HUGGINGFACE_ALLOW_DOWNLOAD=true|false` — разрешить скачивание с Hugging Face (по умолчанию true);
+    - `HUGGINGFACE_DOWNLOAD_RETRIES=3` — количество попыток при сбоях сети.
+- Чтобы заранее подготовить артефакты, запустите воркер с доступом к сети один раз или скачайте модель вручную в
+  `HUGGINGFACE_LOCAL_DIR` (достаточно положить содержимое репозитория `DeepPavlov/rubert-base-cased`). После этого
+  дальнейшие запуски будут выполняться полностью офлайн.
 
 ### Переменные окружения (пример `.env`)
 
-| Переменная | Назначение |
-|-----------|------------|
-| `POLL_INTERVAL_SEC` | Периодичность опроса NewsData API продюсером (секунды). |
-| `NEWSDATA_API_KEY` | Ключ для API источника новостей. |
-| `KAFKA_BOOTSTRAP_SERVERS` | Bootstrap-узлы Kafka (`host:port`, через запятую), которые используют и продюсер, и консюмер. |
-| `KAFKA_TOPIC` | Топик Kafka, куда отправляются новости и который читает консюмер/воркер. |
-| `KAFKA_GROUP_ID` | Идентификатор consumer group (для балансировки нескольких воркеров). |
-| `KAFKA_CONSUMER_POLL_TIMEOUT_MS` | Таймаут `poll()` в консюмере (миллисекунды). |
-| `KAFKA_AUTO_OFFSET_RESET` | Поведение при отсутствии offset (`earliest` / `latest`). |
-| `BATCH_SIZE` | Максимальный размер пакета новостей, который одновременно обрабатывает batch-инференс. |
-| `BATCH_INTERVAL_SECONDS` | Пауза между итерациями воркера, если данных нет. |
-| `MODEL_ARTIFACTS_PATH` | Путь к каталогу с артефактами модели (`clusterer.pkl`, `bert_config.json`, `topics.json`). |
-| `UNKNOWN_THRESHOLD` | Порог confidence (0..1); если `score < threshold`, документ помечается как `unknown`. |
-| `METADATA_RELOAD_INTERVAL_SECONDS` | Частота обновления кеша `topic_metadata`. |
-| `LOG_LEVEL` | Уровень логирования (`DEBUG`, `INFO`, и т.д.). |
-| `SERVICE_NAME` | Имя сервиса для метрик/health. |
-| `MONITORING_ENABLED`, `MONITORING_PORT`, `MONITORING_HOST` | Включение и настройки сервера `/metrics` + `/healthz`. |
-| `HUGGINGFACE_CACHE_DIR`, `HUGGINGFACE_LOCAL_DIR` | Локальные пути к кэшу и копии модели RuBERT. |
-| `HUGGINGFACE_ALLOW_DOWNLOAD`, `HUGGINGFACE_DOWNLOAD_RETRIES` | Управление разрешением на скачивание и количеством попыток при сетевых сбоях. |
-| `POSTGRES_DSN` | Подключение к PostgreSQL (`postgresql://user:pass@host:port/db`). |
-| `DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE` | Минимальное/максимальное число соединений в пуле PostgreSQL. |
+| Переменная                                                   | Назначение                                                                                    |
+|--------------------------------------------------------------|-----------------------------------------------------------------------------------------------|
+| `POLL_INTERVAL_SEC`                                          | Периодичность опроса NewsData API продюсером (секунды).                                       |
+| `NEWSDATA_API_KEY`                                           | Ключ для API источника новостей.                                                              |
+| `KAFKA_BOOTSTRAP_SERVERS`                                    | Bootstrap-узлы Kafka (`host:port`, через запятую), которые используют и продюсер, и консюмер. |
+| `KAFKA_TOPIC`                                                | Топик Kafka, куда отправляются новости и который читает консюмер/воркер.                      |
+| `KAFKA_GROUP_ID`                                             | Идентификатор consumer group (для балансировки нескольких воркеров).                          |
+| `KAFKA_CONSUMER_POLL_TIMEOUT_MS`                             | Таймаут `poll()` в консюмере (миллисекунды).                                                  |
+| `KAFKA_AUTO_OFFSET_RESET`                                    | Поведение при отсутствии offset (`earliest` / `latest`).                                      |
+| `BATCH_SIZE`                                                 | Максимальный размер пакета новостей, который одновременно обрабатывает batch-инференс.        |
+| `BATCH_INTERVAL_SECONDS`                                     | Пауза между итерациями воркера, если данных нет.                                              |
+| `MODEL_ARTIFACTS_PATH`                                       | Путь к каталогу с артефактами модели (`clusterer.pkl`, `bert_config.json`, `topics.json`).    |
+| `UNKNOWN_THRESHOLD`                                          | Порог confidence (0..1); если `score < threshold`, документ помечается как `unknown`.         |
+| `METADATA_RELOAD_INTERVAL_SECONDS`                           | Частота обновления кеша `topic_metadata`.                                                     |
+| `LOG_LEVEL`                                                  | Уровень логирования (`DEBUG`, `INFO`, и т.д.).                                                |
+| `SERVICE_NAME`                                               | Имя сервиса для метрик/health.                                                                |
+| `MONITORING_ENABLED`, `MONITORING_PORT`, `MONITORING_HOST`   | Включение и настройки сервера `/metrics` + `/healthz`.                                        |
+| `HUGGINGFACE_CACHE_DIR`, `HUGGINGFACE_LOCAL_DIR`             | Локальные пути к кэшу и копии модели RuBERT.                                                  |
+| `HUGGINGFACE_ALLOW_DOWNLOAD`, `HUGGINGFACE_DOWNLOAD_RETRIES` | Управление разрешением на скачивание и количеством попыток при сетевых сбоях.                 |
+| `POSTGRES_DSN`                                               | Подключение к PostgreSQL (`postgresql://user:pass@host:port/db`).                             |
+| `DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE`                       | Минимальное/максимальное число соединений в пуле PostgreSQL.                                  |
 
 ### Grafana dashboard
 
-- Готовый JSON-дэшборд лежит в `docs/monitoring/news_dashboard.json`. Импортируй его в Grafana (Dashboards → Import → Upload JSON) и выбери источник данных Prometheus.
-- Панели покрывают продюсер, консюмер и batch-инференс: скорость загрузки новостей, p95 задержки, долю `unknown`, ошибки и throughput. Перед импортом убедись, что все сервисы запускаются с `MONITORING_ENABLED=true`, каждый на своём `MONITORING_PORT`, чтобы Prometheus собирал `news_*`, `incoming_news_*`, `batch_*` метрики.
+- Готовый JSON-дэшборд лежит в `docs/monitoring/news_dashboard.json`. Импортируй его в Grafana (Dashboards → Import →
+  Upload JSON) и выбери источник данных Prometheus.
+- Панели покрывают продюсер, консюмер и batch-инференс: скорость загрузки новостей, p95 задержки, долю `unknown`, ошибки
+  и throughput. Перед импортом убедись, что все сервисы запускаются с `MONITORING_ENABLED=true`, каждый на своём
+  `MONITORING_PORT`, чтобы Prometheus собирал `news_*`, `incoming_news_*`, `batch_*` метрики.
